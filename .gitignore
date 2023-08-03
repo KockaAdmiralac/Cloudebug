@@ -1,0 +1,12 @@
+.venv*
+__pycache__
+node_modules
+build
+dist
+out
+*.egg-info
+*.svg
+*.sqlite
+*.png
+*.pdf
+*.vsix
