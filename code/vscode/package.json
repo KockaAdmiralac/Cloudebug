@@ -1,0 +1,116 @@
+{
+    "name": "cloudebug",
+    "displayName": "Cloudebug",
+    "description": "Cloud debugging interface for my graduation work.",
+    "version": "0.0.1",
+    "engines": {
+        "vscode": "^1.79.0"
+    },
+    "author": {
+        "name": "Luka Simić",
+        "email": "git@kocka.tech",
+        "url": "https://kocka.tech"
+    },
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/KockaAdmiralac/Cloudebug.git"
+    },
+    "categories": [
+        "Debuggers"
+    ],
+    "keywords": [
+        "cloud",
+        "debug"
+    ],
+    "publisher": "kockaadmiralac",
+    "license": "MIT",
+    "activationEvents": [],
+    "main": "./out/extension.js",
+    "contributes": {
+        "commands": [
+            {
+                "command": "cloudebug.connect",
+                "title": "Connect to server",
+                "category": "Cloudebug"
+            },
+            {
+                "command": "cloudebug.addremove",
+                "title": "Add/Remove Cloudebug breakpoint",
+                "category": "Cloudebug"
+            },
+            {
+                "command": "cloudebug.remove",
+                "title": "Remove Cloudebug breakpoint",
+                "category": "Cloudebug"
+            },
+            {
+                "command": "cloudebug.hits",
+                "title": "View Cloudebug breakpoint's hits",
+                "category": "Cloudebug"
+            }
+        ],
+        "menus": {
+            "editor/context": [
+                {
+                    "command": "cloudebug.addremove",
+                    "when": "editorLangId == python"
+                },
+                {
+                    "command": "cloudebug.hits",
+                    "when": "editorLangId == python"
+                }
+            ],
+            "view/title": [
+                {
+                    "command": "cloudebug.connect",
+                    "when": "view == cloudebug.breakpoints"
+                }
+            ],
+            "view/item/context": [
+                {
+                    "command": "cloudebug.remove",
+                    "when": "view == cloudebug.breakpoints && viewItem == breakpoint"
+                }
+            ]
+        },
+        "viewsContainers": {
+            "activitybar": [
+                {
+                    "id": "cloudebug",
+                    "title": "Cloudebug",
+                    "icon": "$(cloud)"
+                }
+            ]
+        },
+        "views": {
+            "cloudebug": [
+                {
+                    "id": "cloudebug.breakpoints",
+                    "name": "Breakpoints"
+                }
+            ]
+        }
+    },
+    "scripts": {
+        "vscode:prepublish": "npm run compile",
+        "compile": "tsc -p ./",
+        "watch": "tsc -watch -p ./",
+        "pretest": "npm run compile && npm run lint",
+        "lint": "eslint src --ext ts"
+    },
+    "dependencies": {
+        "ws": "8.13.0"
+    },
+    "devDependencies": {
+        "@types/vscode": "1.80.0",
+        "@types/ws": "8.5.5",
+        "@types/glob": "8.1.0",
+        "@types/node": "20.2.5",
+        "@typescript-eslint/eslint-plugin": "5.61.0",
+        "@typescript-eslint/parser": "5.61.0",
+        "@vscode/vsce": "2.20.1",
+        "eslint": "8.44.0",
+        "glob": "10.3.2",
+        "typescript": "5.1.6"
+    }
+}
