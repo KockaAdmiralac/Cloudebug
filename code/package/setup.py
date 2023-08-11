@@ -10,7 +10,11 @@ setup(
     ext_modules=[
         Extension(
             name='cloudebug_helper',
-            sources=['cloudebug_helper/ext.cpp'],
+            sources=[
+                'cloudebug_helper/ext.cpp',
+                'cloudebug_helper/manipulation.cpp',
+                'cloudebug_helper/pyutil.cpp'
+            ],
         ),
     ],
     data_files=[
