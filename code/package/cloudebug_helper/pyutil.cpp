@@ -1,7 +1,8 @@
 #include "pyutil.hpp"
+#include <functional>
 #include <stdexcept>
 
-uint32_t findLineStart(PyCodeObject* code, int32_t line, char** outLineTablePtr) {
+void iterateLineTable(PyCodeObject* code, std::function<bool(bool, int32_t, int32_t, int32_t, char*)> callback) {
     if (!PyCode_Check(code)) {
         throw std::runtime_error("Object passed to appendTuple is not a code object.");
     }
@@ -25,14 +26,44 @@ uint32_t findLineStart(PyCodeObject* code, int32_t line, char** outLineTablePtr)
                 currentLine += lineDelta;
             }
         } while (currentStartOffset == currentEndOffset && lineTablePtr < lineTableLimit);
-        if (hasLine && currentLine >= line) {
-            if (outLineTablePtr != NULL) {
-                *outLineTablePtr = lineTablePtr - 2;
-            }
-            return currentStartOffset;
+        if (callback(hasLine, currentLine, currentStartOffset, currentEndOffset, lineTablePtr - 2)) {
+            return;
         }
     }
+}
+
+uint32_t findLineStart(PyCodeObject* code, int32_t line) {
+    bool found = false;
+    uint32_t offset = 0;
+    iterateLineTable(code, [&found, &offset, &line](bool hasLine,
+        int32_t currLine, int32_t startOffset, int32_t, char*) {
+        if (hasLine && currLine >= line) {
+            found = true;
+            offset = startOffset;
+            return true;
+        }
+        return false;
+    });
+    if (found) {
+        return offset;
+    }
     throw std::runtime_error("Failed to locate the given line in the code.");
+}
+
+char* findLineEntry(PyCodeObject* code, uint32_t offset) {
+    char* entry = NULL;
+    iterateLineTable(code, [&offset, &entry](bool, int32_t,
+        int32_t startOffset, int32_t endOffset, char* currEntry) {
+        if (startOffset <= offset && offset < endOffset) {
+            entry = currEntry;
+            return true;
+        }
+        return false;
+    });
+    if (entry != NULL) {
+        return entry;
+    }
+    throw std::runtime_error("Failed to locate the given offset in the code.");
 }
 
 PyObject* appendTuple(PyObject* tuple, uint32_t count, PyObject** items, int32_t* indices) {

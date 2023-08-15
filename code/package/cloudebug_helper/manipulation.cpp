@@ -1,75 +1,249 @@
 #include "manipulation.hpp"
-#include <cmath>
 #include "opcode.h"
 #include "pyutil.hpp"
 #include "ext.hpp"
+#include <cmath>
+#include <queue>
 #include <stdexcept>
+#include <unordered_map>
+#include <vector>
 
-// TODO: Use a proper hashmap
-#define CLOUDEBUG_MAX_BREAKPOINTS 800
-char cloudebugOriginalInstructions[CLOUDEBUG_MAX_BREAKPOINTS * 16];
-unsigned int cloudebugOriginalInstructionSize[CLOUDEBUG_MAX_BREAKPOINTS];
+enum InstructionType: uint8_t {
+    ABS_JUMP_INSTRUCTION,
+    REL_JUMP_INSTRUCTION,
+    YIELD_INSTRUCTION,
+    OTHER_INSTRUCTION
+};
 
-static PyObject* insertBytesAt(PyObject* bytes, unsigned count, const char* newContent, unsigned offset) {
-    if (!PyBytes_Check(bytes)) {
-        throw std::runtime_error("Object passed to insertBytesAt is not a bytes object.");
+struct Instruction {
+    uint8_t opcode;
+    uint32_t arg;
+    uint8_t size;
+    Instruction() = default;
+    Instruction(uint8_t opcode) : Instruction(opcode, 0) {}
+    Instruction(uint8_t opcode, uint32_t arg) : opcode(opcode), arg(arg), size(
+        (arg & 0xFF000000) ?
+            4 :
+            (arg & 0xFF0000) ?
+                3 :
+                (arg & 0xFF00) ?
+                    2 :
+                    1
+    ) {}
+    Instruction(uint8_t opcode, uint32_t arg, uint8_t size) : opcode(opcode), arg(arg), size(size) {}
+};
+
+struct Insertion {
+    uint32_t offset;
+    int32_t size;
+    Insertion(uint32_t offset, int32_t size) : offset(offset), size(size) {}
+};
+
+struct Breakpoint {
+    bool isActive;
+    int32_t injectionSize;
+};
+
+static std::unordered_map<int, Breakpoint> breakpoints;
+
+static InstructionType getInstructionType(const Instruction& instruction) {
+    switch (instruction.opcode) {
+        case YIELD_FROM:
+        case YIELD_VALUE:
+            return YIELD_INSTRUCTION;
+        // From dis.hasjabs.
+        case JUMP_IF_FALSE_OR_POP:
+        case JUMP_IF_TRUE_OR_POP:
+        case JUMP_ABSOLUTE:
+        case POP_JUMP_IF_FALSE:
+        case POP_JUMP_IF_TRUE:
+        case JUMP_IF_NOT_EXC_MATCH:
+            return ABS_JUMP_INSTRUCTION;
+        // From dis.hasrel.
+        case FOR_ITER:
+        case JUMP_FORWARD:
+        case SETUP_FINALLY:
+        case SETUP_WITH:
+        case SETUP_ASYNC_WITH:
+            return REL_JUMP_INSTRUCTION;
+        default:
+            return OTHER_INSTRUCTION;
     }
-    Py_ssize_t oldBytesSize = PyBytes_Size(bytes);
-    Py_ssize_t newBytesSize = oldBytesSize + count;
-    if (offset > oldBytesSize) {
-        throw std::runtime_error("Invalid offset passed to insertBytesAt.");
-    }
-    char* oldBytesBuffer = PyBytes_AsString(bytes);
-    char* newBytesBuffer = (char*) malloc(newBytesSize);
-    // Copy bytes prior to the injection point.
-    memcpy(newBytesBuffer, oldBytesBuffer, offset);
-    // Copy injected bytes.
-    memcpy(newBytesBuffer + offset, newContent, count);
-    // Copy bytes after the injection point.
-    memcpy(newBytesBuffer + offset + count, oldBytesBuffer + offset, oldBytesSize - offset);
-    // Initialize a new bytes object (set to NULL on failure).
-    PyObject* newBytes = PyBytes_FromStringAndSize(newBytesBuffer, newBytesSize);
-    free(newBytesBuffer);
-    return newBytes;
 }
 
-static unsigned int jabsLength(unsigned int addr) {
-    if (addr == 0) {
-        return 2;
+static uint32_t getInstructionsSize(const std::vector<Instruction>& instructions) {
+    uint32_t size = 0;
+    for (auto& instruction : instructions) {
+        size += instruction.size;
     }
-    int numberOfBits = log2(addr) + 1;
-    int numberOfBytes = ceil((float)numberOfBits / 8.0f);
-    return numberOfBytes * 2;
+    return size;
 }
 
-static unsigned int effectiveInstructionLength(char* instruction) {
-    unsigned int instructionLength = 2;
-    while (*instruction == EXTENDED_ARG) {
-        instruction += 2;
-        instructionLength += 2;
+static bool insertInstructionsAtOffset(std::vector<Instruction>& instructions,
+    const std::vector<Instruction>& newInstructions, uint32_t offset) {
+    uint32_t newInstructionsOffset = 0;
+    for (auto it = instructions.begin(); it != instructions.end(); ++it) {
+        if (newInstructionsOffset == offset) {
+            instructions.insert(it, newInstructions.begin(), newInstructions.end());
+            return true;
+        }
+        newInstructionsOffset += it->size * 2;
     }
-    return instructionLength;
+    return false;
 }
 
-static void writeAbsoluteJump(char* instructionOffset, unsigned int jumpTarget) {
-    unsigned int jumpInstructionSize = jabsLength(jumpTarget);
-    for (unsigned int i = 0; i < jumpInstructionSize - 2; i += 2) {
-        unsigned int numJumpBytes = jumpInstructionSize / 2;
-        unsigned int currentIndex = i / 2;
-        unsigned int currentByte = numJumpBytes - currentIndex;
-        unsigned int currentByteContent = (jumpTarget & (0xFF << ((currentByte - 1) * 8))) >> ((currentByte - 1) * 8);
-        instructionOffset[i] = EXTENDED_ARG;
-        instructionOffset[i + 1] = currentByteContent;
+static bool removeInstructionsAtOffset(std::vector<Instruction>& instructions, uint32_t offset,
+    uint32_t numInstructions) {
+    uint32_t instructionsOffset = 0;
+    for (auto it = instructions.begin(); it != instructions.end(); ++it) {
+        if (instructionsOffset == offset) {
+            instructions.erase(it, it + numInstructions);
+            return true;
+        }
+        instructionsOffset += it->size * 2;
     }
-    instructionOffset[jumpInstructionSize - 2] = JUMP_ABSOLUTE;
-    instructionOffset[jumpInstructionSize - 1] = (jumpTarget & 0xFF) / 2;
+    return false;
+}
+
+static uint32_t getBranchTarget(Instruction& instruction, uint32_t offset) {
+    switch (getInstructionType(instruction)) {
+        case REL_JUMP_INSTRUCTION:
+            return offset + (instruction.size + instruction.arg) * 2;
+        case ABS_JUMP_INSTRUCTION:
+            return instruction.arg * 2;
+        default:
+            throw std::runtime_error("getBranchTarget did not receive a branch instruction.");
+    }
+}
+
+/**
+ * @see https://devguide.python.org/internals/interpreter/
+ */
+static Instruction readInstruction(char*& bytecodeIterator) {
+    _Py_CODEUNIT word;
+    uint8_t opcode;
+    uint32_t oparg = 0;
+    uint8_t size = 0;
+    do {
+        word = *((_Py_CODEUNIT*) bytecodeIterator);
+        opcode = _Py_OPCODE(word);
+        oparg = (oparg << 8) | _Py_OPARG(word);
+        ++size;
+        bytecodeIterator += 2;
+    } while (opcode == EXTENDED_ARG);
+    return {opcode, oparg, size};
+}
+
+static std::vector<Instruction> readInstructions(PyCodeObject* code) {
+    char* iterator;
+    Py_ssize_t codeSize;
+    PyBytes_AsStringAndSize(code->co_code, &iterator, &codeSize);
+    char* endIterator = iterator + codeSize;
+    std::vector<Instruction> instructions;
+    while (iterator != endIterator) {
+        instructions.push_back(readInstruction(iterator));
+    }
+    return instructions;
+}
+
+static void writeInstruction(char*& bytecodeIterator, const Instruction& instruction) {
+    for (uint32_t i = instruction.size - 1; i > 0; --i) {
+        (*bytecodeIterator++) = EXTENDED_ARG;
+        uint32_t maskShift = i * 8;
+        uint32_t mask = 0xFF << maskShift;
+        (*bytecodeIterator++) = (instruction.arg & mask) >> maskShift;
+    }
+    (*bytecodeIterator++) = instruction.opcode;
+    (*bytecodeIterator++) = instruction.arg & 0xFF;
+}
+
+static void writeInstructions(PyObject* bytecode, const std::vector<Instruction>& instructions) {
+    char* iterator = PyBytes_AsString(bytecode);
+    for (auto& instruction : instructions) {
+        writeInstruction(iterator, instruction);
+    }
+}
+
+static void performInsertion(std::vector<Instruction>& instructions, std::vector<Insertion>& insertions,
+    uint32_t offset) {
+    for (size_t insertionIndex = 0; insertionIndex < insertions.size(); ++insertionIndex) {
+        const auto insertion = insertions[insertionIndex];
+        for (size_t updateIndex = insertionIndex + 1; updateIndex < insertions.size(); ++updateIndex) {
+            if (insertions[updateIndex].offset >= insertion.offset) {
+                insertions[updateIndex].size += insertion.size;
+            }
+        }
+        uint32_t currentOffset = 0;
+        for (auto& instruction : instructions) {
+            auto instructionType = getInstructionType(instruction);
+            uint32_t target;
+            // We calculate this in advance because the instruction size can change.
+            uint32_t nextJump = instruction.size * 2;
+            Instruction newInstruction;
+            switch (instructionType) {
+                case ABS_JUMP_INSTRUCTION:
+                case REL_JUMP_INSTRUCTION:
+                    target = getBranchTarget(instruction, currentOffset);
+                    if (
+                        target <= insertion.offset ||
+                        (
+                            instructionType == REL_JUMP_INSTRUCTION &&
+                            currentOffset >= insertion.offset
+                        )
+                    ) {
+                        // There is nothing to update.
+                        break;
+                    }
+                    instruction.arg += insertion.size;
+                    newInstruction = Instruction(instruction.opcode, instruction.arg);
+                    if (instruction.size < newInstruction.size) {
+                        // The instruction size has increased, so we need to create a new insertion.
+                        insertions.push_back({
+                            currentOffset,
+                            newInstruction.size - instruction.size
+                        });
+                        instruction.size = newInstruction.size;
+                    }
+                    break;
+                case YIELD_INSTRUCTION:
+                    throw std::runtime_error("Breakpoints in generator functions are not supported.");
+                default:
+                    // No action.
+                    break;
+            }
+            currentOffset += nextJump;
+        }
+    }
+}
+
+static void adjustLineTable(PyCodeObject* code, std::vector<Insertion>& insertions) {
+    for (auto& insertion : insertions) {
+        char* entry = findLineEntry(code, insertion.offset);
+        *entry += insertion.size * 2;
+    }
+}
+
+static void replaceBytecode(PyCodeObject* code, const std::vector<Instruction>& instructions) {
+    uint32_t numInstructions = getInstructionsSize(instructions);
+    PyObject* newCode = PyBytes_FromStringAndSize(NULL, numInstructions * 2);
+    writeInstructions(newCode, instructions);
+    Py_DECREF(code->co_code);
+    code->co_code = newCode;
 }
 
 void addBreakpoint(PyCodeObject* code, int line, int breakpointId) {
+    auto& breakpoint = breakpoints[breakpointId];
+    if (breakpoint.isActive) {
+        throw std::runtime_error("Breakpoint is already active.");
+    }
+    breakpoint.isActive = true;
     // Find the bytecode offset of the given line in the code.
-    int lineStart = findLineStart(code, line, NULL);
+    uint32_t offset = findLineStart(code, line);
     // Extend the names tuple with names required to call the breakpoint callback.
-    PyObject* namesToAppend[] = {cloudebugModuleName, cloudebugBreakpointCallbackName};
+    PyObject* namesToAppend[] = {
+        cloudebugModuleName,
+        cloudebugBreakpointCallbackName
+    };
     int codeNamesIndices[2];
     PyObject* newNames = appendTuple(code->co_names, 2, namesToAppend, codeNamesIndices);
     code->co_names = newNames;
@@ -79,55 +253,56 @@ void addBreakpoint(PyCodeObject* code, int line, int breakpointId) {
     PyObject* newConsts = appendTuple(code->co_consts, 1, constsToAppend, codeConstsIndices);
     code->co_consts = newConsts;
     // Inject the breakpoint callback.
-    char* codeBytesBuffer = PyBytes_AsString(code->co_code);
-    Py_ssize_t codeSize = PyBytes_Size(code->co_code);
-    // JUMP_ABSOLUTE and its target
-    unsigned int jumpTarget = codeSize;
-    unsigned int jumpInstructionSize = jabsLength(jumpTarget / 2);
-    unsigned int currentInstructionSize = effectiveInstructionLength(codeBytesBuffer + lineStart);
-    unsigned int bytesToCopy = (jumpInstructionSize > currentInstructionSize) ? jumpInstructionSize : currentInstructionSize;
-    cloudebugOriginalInstructionSize[breakpointId] = bytesToCopy;
-    memcpy(cloudebugOriginalInstructions + breakpointId * 8, codeBytesBuffer + lineStart, bytesToCopy);
-    writeAbsoluteJump(codeBytesBuffer + lineStart, jumpTarget);
-    if (currentInstructionSize > jumpInstructionSize) {
-        for (unsigned int i = lineStart + jumpInstructionSize; i < lineStart + currentInstructionSize; i += 2) {
-            codeBytesBuffer[i] = NOP;
-        }
-    }
-    const char breakpointCallInstructions[] = {
-        char(LOAD_GLOBAL),
-        char(codeNamesIndices[0]),  // global name index
-        char(LOAD_METHOD),
-        char(codeNamesIndices[1]),  // method name index
-        char(LOAD_CONST),
-        char(codeConstsIndices[0]), // constant index to load (breakpoint ID)
-        char(CALL_METHOD),
-        1,                          // number of positional arguments
-        POP_TOP,
-        0                           // (unused)
+    std::vector<Instruction> instructions = readInstructions(code);
+    std::vector<Instruction> newInstructions {
+        // Stack: ...
+        {LOAD_GLOBAL, uint32_t(codeNamesIndices[0])},
+        // Stack: ... [module cloudebug]
+        {LOAD_METHOD, uint32_t(codeNamesIndices[1])},
+        // Stack: ... [NULL] [function breakpoint]
+        {LOAD_CONST, uint32_t(codeConstsIndices[0])},
+        // Stack: ... [NULL] [function breakpoint] [int breakpointId]
+        {CALL_METHOD, 1},
+        // Stack: ... [None]
+        {POP_TOP}
+        // Stack: ...
     };
-    unsigned int injectedInstructionSize = sizeof(breakpointCallInstructions) + bytesToCopy + jabsLength(lineStart);
-    char* instructions = (char*) malloc(injectedInstructionSize);
-    memcpy(instructions, breakpointCallInstructions, sizeof(breakpointCallInstructions));
-    memcpy(instructions + sizeof(breakpointCallInstructions), cloudebugOriginalInstructions + breakpointId * 8, bytesToCopy);
-    writeAbsoluteJump(instructions + sizeof(breakpointCallInstructions) + bytesToCopy, lineStart + 2);
-    PyObject* newCode = insertBytesAt(code->co_code, injectedInstructionSize, instructions, codeSize);
-    Py_DECREF(code->co_code);
-    code->co_code = newCode;
-    // Increment the stack size to make way for 1 method and its argument.
-    code->co_stacksize += 256;
-    // TODO: Extend the line table.
+    if (!insertInstructionsAtOffset(instructions, newInstructions, offset)) {
+        throw std::runtime_error("Failed to find an insertion point for new instructions.");
+    }
+    breakpoint.injectionSize = int32_t(getInstructionsSize(newInstructions));
+    std::vector<Insertion> insertions {
+        {offset, breakpoint.injectionSize}
+    };
+    performInsertion(instructions, insertions, offset);
+    replaceBytecode(code, instructions);
+    // Increment the stack size to make way for added elements.
+    code->co_stacksize += 3;
+    // Extend the line table to account for added instructions.
+    adjustLineTable(code, insertions);
 }
 
 void removeBreakpoint(PyCodeObject* code, int line, int breakpointId) {
+    auto& breakpoint = breakpoints[breakpointId];
+    if (!breakpoint.isActive) {
+        throw std::runtime_error("Breakpoint is not active.");
+    }
+    breakpoint.isActive = false;
     // Find the bytecode offset of the given line in the code.
-    int lineStart = findLineStart(code, line, NULL);
+    uint32_t offset = findLineStart(code, line);
     // Return the original bytecode.
-    char* codeBytesBuffer = PyBytes_AsString(code->co_code);
-    unsigned int bytesToCopy = cloudebugOriginalInstructionSize[breakpointId];
-    memcpy(codeBytesBuffer + lineStart, cloudebugOriginalInstructions + breakpointId * 8, bytesToCopy);
+    std::vector<Instruction> instructions = readInstructions(code);
+    if (!removeInstructionsAtOffset(instructions, offset, 5)) {
+        throw std::runtime_error("Failed to remove injected instructions.");
+    }
+    std::vector<Insertion> removals {
+        {offset, -breakpoint.injectionSize}
+    };
+    performInsertion(instructions, removals, offset);
+    replaceBytecode(code, instructions);
     // Decrement the stack size that was incremented previously.
-    code->co_stacksize -= 256;
-    // TODO: Remove the appended bytecode.
+    code->co_stacksize -= 3;
+    // Adjust the line table to account for removed instructions.
+    adjustLineTable(code, removals);
     // TODO: Remove the injected co_consts and co_names...
 }
