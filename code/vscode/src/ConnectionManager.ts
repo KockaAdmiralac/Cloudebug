@@ -60,15 +60,15 @@ export class ConnectionManager extends EventEmitter {
                 this.emit('remove', message.id);
                 break;
             case 'hit':
-                const hitEvent: HitEvent = {
+                const hitEvents: HitEvent[] = message.hits.map(({id, values, breakpointId}) => ({
                     hit: {
-                        id: message.id,
+                        id,
                         date: new Date().toISOString(),
-                        values: message.values
+                        values
                     },
-                    breakpointId: message.breakpointId
-                };
-                this.emit('hit', [hitEvent]);
+                    breakpointId
+                }));
+                this.emit('hit', hitEvents);
                 break;
             case 'breakpoints':
                 this.emit('add', message.breakpoints);
@@ -76,7 +76,7 @@ export class ConnectionManager extends EventEmitter {
             case 'hits':
                 this.emit('hit', message.hits.map(hit => ({
                     breakpointId: message.breakpointId,
-                    hit: hit
+                    hit
                 })));
                 break;
             default:

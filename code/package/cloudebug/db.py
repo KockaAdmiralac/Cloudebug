@@ -53,10 +53,11 @@ Breakpoint = Tuple[int, str, int, Optional[str], Iterable[str]]
 Hit = Tuple[int, datetime, Iterable[str]]
 
 class CloudebugDB:
-    def __init__(self, base: Path):
+    def __init__(self, base: Path, init: bool = False):
         makedirs(base / '.cloudebug', exist_ok=True)
         self.db: Connection = connect(base / '.cloudebug' / 'db.sqlite')
-        self.db.executescript(schema)
+        if init:
+            self.db.executescript(schema)
 
     def get_breakpoint(self, id: int) -> Optional[Breakpoint]:
         breakpoint = self.db.execute('SELECT file, line, condition FROM breakpoint WHERE id = ?', (id,)).fetchone()
@@ -106,17 +107,25 @@ class CloudebugDB:
         self.db.execute('DELETE FROM breakpoint WHERE id = ?', (id,))
         self.db.commit()
 
-    def log_hit(self, breakpoint_id: int, values: Iterable[str]) -> int:
+    def log_hits(self, breakpoint_ids: Iterable[int], values: List[List[str]]) -> List[int]:
         try:
-            expression_ids = [int(row[0]) for row in self.db.execute('SELECT id FROM expression WHERE breakpoint_id = ?', (breakpoint_id,))]
-            cursor = self.db.execute('INSERT INTO hit (breakpoint_id) VALUES (?)', (breakpoint_id,))
-            hit_id = cursor.lastrowid
-            if hit_id is None:
-                raise Exception('No rowid returned after hit insertion.')
-            for index, value in enumerate(values):
-                self.db.execute('INSERT INTO expression_value (hit_id, expression_id, value) VALUES (?, ?, ?)', (hit_id, expression_ids[index], value))
+            get_expression_ids_query = f'''SELECT id, breakpoint_id FROM expression WHERE breakpoint_id IN ({
+                ",".join([str(id) for id in breakpoint_ids])
+            })'''
+            expression_ids = [(int(row[0]), int(row[1])) for row in self.db.execute(get_expression_ids_query)]
+            hit_ids = []
+            values_db: List[Tuple[int, int, str]] = []
+            for idx, breakpoint_id in enumerate(breakpoint_ids):
+                cursor = self.db.execute('INSERT INTO hit (breakpoint_id) VALUES (?)', (breakpoint_id,))
+                hit_id = cursor.lastrowid
+                if hit_id is None:
+                    raise Exception('No rowid returned after hit insertion.')
+                hit_ids.append(hit_id)
+                expression_ids_filtered = [id for id, bp_id in expression_ids if breakpoint_id == bp_id]
+                values_db += [(hit_id, expression_ids_filtered[value_idx], value) for value_idx, value in enumerate(values[idx])]
+            self.db.executemany('INSERT INTO expression_value (hit_id, expression_id, value) VALUES (?, ?, ?)', values_db)
             self.db.commit()
-            return hit_id
+            return hit_ids
         finally:
             if self.db.in_transaction:
                 self.db.rollback()

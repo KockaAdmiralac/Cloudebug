@@ -1,4 +1,4 @@
-from asyncio import AbstractEventLoop, Event
+from asyncio import AbstractEventLoop
 from http import HTTPStatus
 from json import JSONDecodeError, dumps, loads
 from os import environ
@@ -11,7 +11,7 @@ from websockets.legacy.server import serve
 from websockets.server import WebSocketServerProtocol
 
 from .db import Breakpoint, CloudebugDB, Hit
-from .state import State, set_state
+from .state import MQueue, State, set_state
 from .util import deject, get_base_path, inject
 
 def breakpoint_to_json(breakpoint: Breakpoint) -> Dict[str, Any]:
@@ -155,16 +155,39 @@ async def process_request(path: str, headers: HeadersLike) -> Optional[Tuple[HTT
             'message': 'Authentication failed.'
         }).encode('utf-8')
 
-async def cloudebug_main(exit_event: Event, event_loop: AbstractEventLoop):
+async def cloudebug_main(message_queue: MQueue, event_loop: AbstractEventLoop):
     async with serve(cloudebug_ws_handler, 'localhost', 19287, process_request=process_request) as server:
-        set_state(State(server, event_loop))
-        await exit_event.wait()
+        set_state(State(message_queue, event_loop))
+        db = CloudebugDB(get_base_path(), True)
+        while True:
+            item = await message_queue.get()
+            if item is None:
+                break
+            breakpoint_ids = [item[0]]
+            values = [item[1]]
+            for i in range(message_queue.qsize()):
+                item = message_queue.get_nowait()
+                if item is None:
+                    return
+                breakpoint_ids.append(item[0])
+                values.append(item[1])
+            hit_ids = db.log_hits(breakpoint_ids, values)
+            hits = [{
+                'id': hit_id,
+                'breakpointId': breakpoint_ids[idx],
+                'values': values[idx]
+            } for idx, hit_id in enumerate(hit_ids)]
+            for socket in server.websockets:
+                await socket.send(dumps({
+                    'type': 'hit',
+                    'hits': hits
+                }))
 
-def cloudebug_thread(exit_event: Event, event_loop: AbstractEventLoop):
-    event_loop.run_until_complete(cloudebug_main(exit_event, event_loop))
+def cloudebug_thread(message_queue: MQueue, event_loop: AbstractEventLoop):
+    event_loop.run_until_complete(cloudebug_main(message_queue, event_loop))
 
 def init_breakpoints():
     base = get_base_path()
-    db = CloudebugDB(base)
+    db = CloudebugDB(base, True)
     for id, file, line, condition, expressions in db.get_breakpoints():
         inject(base, file, line, id)

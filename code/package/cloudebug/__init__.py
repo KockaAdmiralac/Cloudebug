@@ -1,5 +1,4 @@
-from asyncio import Event, new_event_loop, run_coroutine_threadsafe
-from json import dumps
+from asyncio import Queue, new_event_loop, run_coroutine_threadsafe
 from sys import _getframe, stderr
 from threading import Thread
 from traceback import format_exception
@@ -39,24 +38,17 @@ def breakpoint_callback(id: int):
                 except Exception as error:
                     print('Expression evaluation failed:', ''.join(format_exception(error)), file=stderr)
                     values.append('<error>')
-        hit_id = db.log_hit(id, values)
-        for socket in state.ws_server.websockets:
-            run_coroutine_threadsafe(socket.send(dumps({
-                'type': 'hit',
-                'id': hit_id,
-                'breakpointId': id,
-                'values': values
-            })), state.event_loop)
+            run_coroutine_threadsafe(state.message_queue.put((id, values)), state.event_loop)
     except Exception as error:
         print('Unknown error:', ''.join(format_exception(error)), file=stderr)
 
 def init(main_func: Callable[[], Any]):
     init_breakpoints()
     event_loop = new_event_loop()
-    exit_event = Event()
-    side_thread = Thread(target=cloudebug_thread, args=(exit_event, event_loop))
+    message_queue = Queue()
+    side_thread = Thread(target=cloudebug_thread, args=(message_queue, event_loop))
     side_thread.start()
     try:
         main_func()
     finally:
-        event_loop.call_soon_threadsafe(exit_event.set)
+        run_coroutine_threadsafe(message_queue.put(None), event_loop)

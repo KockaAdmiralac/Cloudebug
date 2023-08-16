@@ -1,12 +1,12 @@
-from asyncio import AbstractEventLoop
+from asyncio import AbstractEventLoop, Queue
 from dataclasses import dataclass
-from typing import Optional
+from typing import List, Optional, Tuple
 
-from websockets.server import WebSocketServer
+MQueue = Queue[Optional[Tuple[int, List[str]]]]
 
 @dataclass
 class State:
-    ws_server: WebSocketServer
+    message_queue: MQueue
     event_loop: AbstractEventLoop
 
 state: Optional[State] = None

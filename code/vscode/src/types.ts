@@ -38,11 +38,15 @@ interface BreakpointRemovedMessage {
     id: number;
 }
 
-interface HitMessage {
-    type: 'hit';
+interface Hit {
     id: number;
     breakpointId: number;
     values: string[];
+}
+
+interface HitMessage {
+    type: 'hit';
+    hits: Hit[];
 }
 
 export type Message = ErrorMessage |
