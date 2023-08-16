@@ -5,12 +5,12 @@ from traceback import format_exception
 from typing import Any, Callable, List
 
 from .db import CloudebugDB
+from .eval import evaluate_expression
 from .state import get_state
 from .util import get_base_path
 from .ws import cloudebug_thread, init_breakpoints
 
 def breakpoint_callback(id: int):
-    # TODO: Cached evaluation of expressions
     try:
         state = get_state()
         db = CloudebugDB(get_base_path())
@@ -24,20 +24,16 @@ def breakpoint_callback(id: int):
         condition = breakpoint[3]
         if prev_frame is not None:
             if condition is not None:
-                try:
-                    if not eval(condition, prev_frame.f_globals, prev_frame.f_locals):
-                        # Condition false, do not log
-                        return
-                except Exception as error:
-                    # Condition failed, do not log
-                    print('Condition evaluation failed:', ''.join(format_exception(error)), file=stderr)
+                error, value = evaluate_expression(condition, prev_frame)
+                if error is not None or not value:
+                    # Condition false, do not log
                     return
             for expression in db.get_expressions(id):
-                try:
-                    values.append(str(eval(expression, prev_frame.f_globals, prev_frame.f_locals)))
-                except Exception as error:
-                    print('Expression evaluation failed:', ''.join(format_exception(error)), file=stderr)
-                    values.append('<error>')
+                error, value = evaluate_expression(expression, prev_frame)
+                if error is not None:
+                    values.append(error)
+                else:
+                    values.append(str(value))
             run_coroutine_threadsafe(state.message_queue.put((id, values)), state.event_loop)
     except Exception as error:
         print('Unknown error:', ''.join(format_exception(error)), file=stderr)
