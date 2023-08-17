@@ -4,9 +4,16 @@ from cloudebug import init
 
 app = Flask(__name__)
 
+state = 0
+
+def inc_state() -> int:
+    global state
+    state += 1
+    return state
+
 @app.route('/', methods=['GET'])
 def index():
-    return jsonify(version='1.0.0')
+    return jsonify(version='1.0.0', state=state)
 
 @app.route('/order', methods=['POST'])
 def order():
