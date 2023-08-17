@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS hit (
     breakpoint_id INTEGER,
     datetime TIMESTAMP NOT NULL DEFAULT (unixepoch()),
     FOREIGN KEY (breakpoint_id) REFERENCES breakpoint(id)
-        ON DELETE SET NULL
+        ON DELETE CASCADE
         ON UPDATE CASCADE
 );
 
@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS expression_value (
         ON DELETE CASCADE
         ON UPDATE CASCADE
     FOREIGN KEY (expression_id) REFERENCES expression(id)
-        ON DELETE SET NULL
+        ON DELETE CASCADE
         ON UPDATE CASCADE
 );
 
