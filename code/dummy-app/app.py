@@ -17,9 +17,9 @@ def index():
 
 @app.route('/order', methods=['POST'])
 def order():
-    if int(request.args.get('a', 123)) % 2 == 0:
+    a = request.args.get('a', 123)
+    if int(a) % 2 == 0:
         for i in range(10):
-            print('A')
             print('A')
             print('A')
             print('A')
