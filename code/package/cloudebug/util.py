@@ -18,7 +18,7 @@ def get_func_from_module_and_line(module: ModuleType, line: int) -> Optional[Cod
         return None
     code_objects: List[CodeType] = []
     for _, module_item in module.__dict__.items():
-        if isinstance(module_item, FunctionType) and isinstance(module_item.__code__, CodeType):
+        if isinstance(module_item, FunctionType) and isinstance(module_item.__code__, CodeType) and module_item.__code__.co_filename == module.__file__:
             code_objects.append(module_item.__code__)
     candidate_code = None
     min_lines = 1000000000000000000000000
@@ -33,7 +33,7 @@ def get_func_from_module_and_line(module: ModuleType, line: int) -> Optional[Cod
                 min_lines = num_lines
                 candidate_code = code_object
         for const in code_object.co_consts:
-            if isinstance(const, CodeType):
+            if isinstance(const, CodeType) and const.co_filename == module.__file__:
                 code_objects.append(const)
     return candidate_code
 
