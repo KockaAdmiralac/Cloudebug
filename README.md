@@ -5,4 +5,4 @@ This repository contains my graduation work, an exploration of building a debugg
 - `code/package/cloudebug`: Wrapper Python code around the CPython extension that interfaces with the app being debugged and the developer connecting through a debugging client
 - `code/vscode`: Visual Studio Code extension that serves as a debugging client
 - `code/dummy-app`: A sample Flask app to test debugging on
-- `report`: Report from my graduation work (in Serbian!)
+- `report`: Report from my graduation work (in Serbian!) Sorry for the DOCX format, I really did not have time to properly convert it to Markdown.
